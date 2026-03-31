@@ -1,0 +1,47 @@
+-- XN: полностью оптимизированная версия
+-- de Bruijn индексы: 0 = ближайший аргумент, 1 = на уровень выше, ...
+-- R  = рекурсивная функция (self = ссылка на себя)
+-- ⊥  = nil   ⊤ = true   ⊥? = nil-check
+-- .0 .1 .2   = поля структуры (left, right, val)
+-- #  = length   Σ = sum   √ = sqrt
+-- закрывающие скобки опущены — арность каждого оператора фиксирована
+
+(= insert  (R
+  (? 0  {⊥ ⊥ 1}
+    (< 1 .2 0
+      {(self .0 0 1) .1 0 .2 0}
+      (> 1 .2 0
+        {.0 0 (self .1 0 1) .2 0}
+        0
+
+(= search  (R
+  (? 0  ⊥
+    (= 1 .2 0  ⊤
+      (< 1 .2 0
+        (self .0 0 1)
+        (self .1 0 1
+
+(= inorder (R
+  (? 0  []
+    (++ (self .0 0) [.2 0] (self .1 0
+
+(= build   (λ (fold 0 ⊥ insert
+(= mean    (λ (/ (Σ 0) (# 0
+(= var     (λ (/ (Σ (map 0 (λ (^ (- 0 (mean 1)) 2 (# 0
+(= stddev  (λ (√ (var 0
+(= median  (λ
+  (: (sort 0) (: (# 0)
+    (? (= (% 1 2) 0)
+      (/ (+ (@ 2 (- (/ 1 2) 1)) (@ 2 (/ 1 2))) 2.0)
+      (@ 2 (/ 1 2
+
+(= data  [64 34 25 12 22 11 90 45 67 3]
+(= tree  (build data
+(= res   (inorder tree
+(io
+  (print "Sorted:    " res)
+  (print "Mean:      " (mean   res
+  (print "Std dev:   " (stddev res
+  (print "Median:    " (median res
+  (print "Search 45: " (search tree 45
+  (print "Search 99: " (search tree 99

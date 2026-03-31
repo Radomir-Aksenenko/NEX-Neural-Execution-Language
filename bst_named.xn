@@ -1,0 +1,51 @@
+-- XN: версия с именами переменных (читаемая)
+-- структура узла: {left right val} | ⊥ (nil)
+
+(= insert
+  (λ (tree val)
+    (if (⊥? tree)
+      {⊥ ⊥ val}
+      (if (< val (.val tree))
+        {(insert (.left tree) val)  (.right tree)            (.val tree)}
+        (if (> val (.val tree))
+          {(.left tree)             (insert (.right tree) val) (.val tree)}
+          tree)))))
+
+(= search
+  (λ (tree val)
+    (if (⊥? tree)  ⊥
+      (if (= val (.val tree))  ⊤
+        (if (< val (.val tree))
+          (search (.left  tree) val)
+          (search (.right tree) val))))))
+
+(= inorder
+  (λ (tree)
+    (if (⊥? tree)  []
+      (++ (inorder (.left tree))
+          [(.val tree)]
+          (inorder (.right tree))))))
+
+(= build   (λ (xs)  (fold xs ⊥ insert)))
+(= mean    (λ (xs)  (/ (Σ xs) (# xs))))
+(= var     (λ (xs)  (/ (Σ (map xs (λ (x) (^ (- x (mean xs)) 2)))) (# xs))))
+(= stddev  (λ (xs)  (√ (var xs))))
+(= median
+  (λ (xs)
+    (: s (sort xs)  (: n (# s)
+      (if (= (% n 2) 0)
+        (/ (+ (@ s (- (/ n 2) 1)) (@ s (/ n 2))) 2.0)
+        (@ s (/ n 2)))))))
+
+(= main
+  (λ ()
+    (: data  [64 34 25 12 22 11 90 45 67 3]
+      (: tree (build data)
+        (: res  (inorder tree)
+          (io
+            (print "Sorted:    " res)
+            (print "Mean:      " (mean   res))
+            (print "Std dev:   " (stddev res))
+            (print "Median:    " (median res))
+            (print "Search 45: " (search tree 45))
+            (print "Search 99: " (search tree 99))))))))
