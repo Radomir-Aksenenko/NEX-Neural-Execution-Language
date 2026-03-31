@@ -50,6 +50,7 @@ enum class Op : uint8_t {
     LIST_MAP,       // pop f,xs -> map
     SQRT,
     SEQ,            // pop arg items, keep last (io)
+    MATCH_NODE,     // pop node -> push left,right,val onto stack
 };
 
 struct Instr { Op op; int64_t arg = 0; };
@@ -379,8 +380,52 @@ struct Compiler {
         if(ch.empty()) { emit(Op::PUSH_NIL); return; }
         std::string h=atomOf(ch[0]);
 
-        if(h=="\xce\xbb") { // λ
+        if(h=="\xce\xbb"||h=="\\") { // λ or \ (short alias)
             compLambda(ch[1], ch[2]);
+            return;
+        }
+        // (-> val step1 step2 ...)
+        // Pure AST rewrite — no extra opcodes needed.
+        //   atom  step: (-> v f)       =>  (f v)
+        //   sexpr step: (-> v (f a b)) =>  (f v a b)   value threaded as first arg
+        if(h=="->") {
+            AST cur=ch[1];
+            for(int i=2;i<(int)ch.size();i++) {
+                AST step=ch[i];
+                auto call=makeANode(ANode::K::SEXPR);
+                if(step->kind==ANode::K::ATOM) {
+                    call->ch.push_back(step);
+                    call->ch.push_back(cur);
+                } else {
+                    call->ch.push_back(step->ch[0]);      // fn
+                    call->ch.push_back(cur);               // threaded value first
+                    for(int j=1;j<(int)step->ch.size();j++)
+                        call->ch.push_back(step->ch[j]);  // extra args
+                }
+                cur=call;
+            }
+            compExpr(cur);
+            return;
+        }
+        // (let [a v1  b v2  c v3] body)  — multi-let, flat binding list
+        if(h=="let") {
+            auto& binds=ch[1]->ch;
+            for(int i=0;i+1<(int)binds.size();i+=2) {
+                compExpr(binds[i+1]);
+                emit(Op::STORE, co->nameIdx(binds[i]->sval));
+            }
+            compExpr(ch[2]);
+            return;
+        }
+        // (match node {l r v} body)  — struct destructuring
+        if(h=="match") {
+            compExpr(ch[1]);       // push node
+            emit(Op::MATCH_NODE);  // pop node -> push left right val
+            auto& pat=ch[2]->ch;   // STRUCT {l r v}
+            emit(Op::STORE, co->nameIdx(pat[2]->sval)); // val   (top of stack)
+            emit(Op::STORE, co->nameIdx(pat[1]->sval)); // right
+            emit(Op::STORE, co->nameIdx(pat[0]->sval)); // left
+            compExpr(ch[3]);
             return;
         }
         if(h=="if") {
@@ -580,15 +625,34 @@ struct VM {
                 push(mkList(std::move(res))); break;
             }
 
-            case Op::ADD: { Val b=pop(),a=pop();
-                push(a->isInt()&&b->isInt() ? mkInt(a->asInt()+b->asInt()) : mkDbl(a->asDbl()+b->asDbl())); break; }
-            case Op::SUB: { Val b=pop(),a=pop();
-                push(a->isInt()&&b->isInt() ? mkInt(a->asInt()-b->asInt()) : mkDbl(a->asDbl()-b->asDbl())); break; }
-            case Op::MUL: { Val b=pop(),a=pop();
-                push(a->isInt()&&b->isInt() ? mkInt(a->asInt()*b->asInt()) : mkDbl(a->asDbl()*b->asDbl())); break; }
-            case Op::DIV: { Val b=pop(),a=pop(); push(mkDbl(a->asDbl()/b->asDbl())); break; }
-            case Op::MOD: { Val b=pop(),a=pop(); push(mkInt(a->asInt()%b->asInt())); break; }
-            case Op::POW: { Val b=pop(),a=pop(); push(mkDbl(std::pow(a->asDbl(),b->asDbl()))); break; }
+            // BCAST_OP: if either operand is a list, broadcast op element-wise.
+            // OP uses local names 'a' and 'b' (the two operands).
+            // Static lambda shadows outer a_/b_ with its own a/b params -> no capture needed.
+            #define BCAST_OP(OP) \
+                { Val b_=pop(), a_=pop(); \
+                  auto F=[](Val a, Val b) -> Val { return OP; }; \
+                  if(!a_->isList()&&!b_->isList()) { push(F(a_,b_)); break; } \
+                  if(a_->isList()&&b_->isList()) { \
+                      auto& la=a_->asList(); auto& lb=b_->asList(); \
+                      std::vector<Val> r; r.reserve(la.size()); \
+                      for(int _=0;_<(int)la.size();_++) r.push_back(F(la[_],lb[_])); \
+                      push(mkList(std::move(r))); \
+                  } else if(a_->isList()) { \
+                      std::vector<Val> r; \
+                      for(auto& x:a_->asList()) r.push_back(F(x,b_)); \
+                      push(mkList(std::move(r))); \
+                  } else { \
+                      std::vector<Val> r; \
+                      for(auto& y:b_->asList()) r.push_back(F(a_,y)); \
+                      push(mkList(std::move(r))); \
+                  } break; }
+
+            case Op::ADD: BCAST_OP(a->isInt()&&b->isInt()?mkInt(a->asInt()+b->asInt()):mkDbl(a->asDbl()+b->asDbl()))
+            case Op::SUB: BCAST_OP(a->isInt()&&b->isInt()?mkInt(a->asInt()-b->asInt()):mkDbl(a->asDbl()-b->asDbl()))
+            case Op::MUL: BCAST_OP(a->isInt()&&b->isInt()?mkInt(a->asInt()*b->asInt()):mkDbl(a->asDbl()*b->asDbl()))
+            case Op::DIV: BCAST_OP(mkDbl(a->asDbl()/b->asDbl()))
+            case Op::MOD: BCAST_OP(mkInt(a->asInt()%b->asInt()))
+            case Op::POW: BCAST_OP(mkDbl(std::pow(a->asDbl(),b->asDbl())))
 
             case Op::LT:  { Val b=pop(),a=pop(); push(a->asDbl()<b->asDbl()  ? TRUE_V:NIL_V); break; }
             case Op::GT:  { Val b=pop(),a=pop(); push(a->asDbl()>b->asDbl()  ? TRUE_V:NIL_V); break; }
@@ -642,6 +706,14 @@ struct VM {
                 for(int i=0;i<n-1;i++) pop();
                 push(last); break;
             }
+            case Op::MATCH_NODE: {
+                Val v=pop();
+                if(!v->isNode()) throw std::runtime_error("match: not a node: "+v->repr());
+                auto nd=v->asNode();
+                push(nd->left); push(nd->right); push(nd->val); // left bottom, val top
+                break;
+            }
+            #undef BCAST_OP
             default:
                 throw std::runtime_error("Unknown opcode "+std::to_string((int)ins.op));
             }

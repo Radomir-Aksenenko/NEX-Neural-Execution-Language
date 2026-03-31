@@ -11,35 +11,45 @@ program  := decl*
 decl     := (= name expr)
 
 expr :=
-  ⊥                           -- nil (None)
-  ⊤                           -- true
-  number                      -- 42  3.14
+  ⊥                              -- nil (None)
+  ⊤                              -- true
+  number                         -- 42  3.14
   "string"
-  [e1 e2 ...]                 -- list literal
-  {left right val}            -- struct (ALWAYS exactly 3 fields)
-  (λ (p1 p2 ...) body)       -- lambda
-  (λ () body)                 -- zero-arg lambda
-  (if cond then else)         -- ALWAYS both branches required
-  (: name val body)           -- let binding, scoped to body
-  (= a b)                     -- equality → ⊤ or ⊥
-  (⊥? expr)                  -- nil check → ⊤ or ⊥
-  (.left expr)                -- field: left / right / val
+  [e1 e2 ...]                    -- list literal
+  {left right val}               -- struct (ALWAYS exactly 3 fields)
+  (λ (p1 p2 ...) body)          -- lambda  (λ = \u03bb)
+  (\ (p1 p2 ...) body)          -- lambda  (\ = ASCII alias, identical)
+  (λ () body)                    -- zero-arg lambda
+  (if cond then else)            -- ALWAYS both branches required
+  (: name val body)              -- single let binding, scoped to body
+  (let [a v1  b v2  c v3] body) -- multi-let, flat binding list
+  (-> val step1 step2 ...)       -- pipe: val threaded through each step
+                                 --   atom step:  (-> v f)     = (f v)
+                                 --   sexpr step: (-> v (f a)) = (f v a)
+  (match node {l r v} body)     -- destructure 3-field struct into l r v
+  (= a b)                        -- equality → ⊤ or ⊥
+  (⊥? expr)                     -- nil check → ⊤ or ⊥
+  (.left expr)                   -- field access: left / right / val
   (.right expr)
   (.val expr)
   (+ a b) (- a b) (* a b) (/ a b) (% a b) (^ base exp)
   (< a b) (> a b) (<= a b) (>= a b)
   (neg x)
-  (++ list ...)               -- concat lists
-  (@ list index)              -- index, 0-based
-  (fold xs init f)            -- left fold
-  (map xs f)                  -- returns new list
-  (sort xs)                   -- sorted copy
-  (Σ xs)                      -- sum
-  (# xs)                      -- length
-  (√ x)                       -- sqrt
-  (print arg ...)             -- print space-separated, newline
-  (io expr ...)               -- sequence side effects, return last
-  (name arg ...)              -- function call
+  (++ list ...)                  -- concat lists
+  (@ list index)                 -- index, 0-based
+  (fold xs init f)               -- left fold
+  (map xs f)                     -- returns new list
+  (sort xs)                      -- sorted copy
+  (Σ xs)                         -- sum
+  (# xs)                         -- length
+  (√ x)                          -- sqrt
+  (print arg ...)                -- print space-separated + newline
+  (io expr ...)                  -- sequence side effects, return last
+  (name arg ...)                 -- function call
+
+-- BROADCASTING: arithmetic ops auto-broadcast over lists:
+--   (+ [1 2 3] 10)      → [11 12 13]
+--   (* [1 2 3] [4 5 6]) → [4 10 18]
 ```
 
 ---
@@ -144,6 +154,46 @@ expr :=
 
 ---
 
+## New Features (v2)
+
+**Pipe `->` — flatten deep nesting:**
+```xn
+-- old:
+(print (√ (/ (Σ (map xs (\ (x) (* x x)))) (# xs))))
+-- new:
+(-> xs (map (\ (x) (* x x))) Σ (/ (# xs)) √ print)
+```
+
+**Multi-let — replace cascading `:`:**
+```xn
+-- old:
+(: a 10 (: b 20 (: c 30 (+ a (+ b c)))))
+-- new:
+(let [a 10  b 20  c 30] (+ a (+ b c)))
+```
+
+**Match — destructure struct in one step:**
+```xn
+-- old:
+(: l (.left nd) (: r (.right nd) (: v (.val nd) body)))
+-- new:
+(match nd {l r v} body)
+```
+
+**Broadcasting — scalar/list arithmetic:**
+```xn
+(+ [1 2 3] 10)        -- [11 12 13]
+(* [2 3 4] [10 10 10]) -- [20 30 40]
+(/ [10 20 30] 10)     -- [1.0 2.0 3.0]
+```
+
+**Short lambda `\` — ASCII alias for λ:**
+```xn
+(\ (x y) (+ x y))   -- same as (λ (x y) (+ x y))
+```
+
+---
+
 ## Errors to Avoid
 
 | Wrong | Right |
@@ -154,7 +204,8 @@ expr :=
 | `a.field` | `(.field a)` |
 | `[1, 2, 3]` | `[1 2 3]` |
 | `return x` | last expr is return value |
-| `x = 5` in body | `(: x 5 body)` |
+| `x = 5` in body | `(: x 5 body)` or `(let [x 5] body)` |
+| `(let [a 10] body)` — odd binding list | pairs only: `[a 10  b 20]` |
 
 ---
 
