@@ -355,6 +355,315 @@ struct Parser {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
+// MULTILINGUAL KEYWORD ALIASES
+// Maps any supported language's keyword → canonical XN keyword.
+// Arithmetic operators (+,-,*,/,etc.) are already language-neutral.
+// ══════════════════════════════════════════════════════════════════════════════
+
+static const std::unordered_map<std::string,std::string>& langAliases() {
+    static const std::unordered_map<std::string,std::string> T = {
+        // ── Lambda ────────────────────────────────────────────────────────────
+        // Russian
+        {"функция","\xce\xbb"},{"фн","\xce\xbb"},
+        // Chinese
+        {"函数","\xce\xbb"},{"函","\xce\xbb"},
+        // Japanese
+        {"関数","\xce\xbb"},
+        // Spanish/Portuguese
+        {"función","\xce\xbb"},{"função","\xce\xbb"},{"fn","\xce\xbb"},
+        // French
+        {"fonction","\xce\xbb"},
+        // German
+        {"Funktion","\xce\xbb"},{"funktion","\xce\xbb"},
+        // Arabic
+        {"\xd8\xaf\xd8\xa7\xd9\x84\xd8\xa9","\xce\xbb"}, // دالة
+
+        // ── if ────────────────────────────────────────────────────────────────
+        {"если","if"},                      // Russian
+        {"如果","if"},                      // Chinese
+        {"もし","if"},                      // Japanese
+        {"si","if"},                        // Spanish/French/Portuguese
+        {"wenn","if"},                      // German
+        {"\xd8\xa5\xd8\xb0\xd8\xa7","if"}, // Arabic: إذا
+        {"eğer","if"},                      // Turkish
+        {"eger","if"},
+        {"якщо","if"},                      // Ukrainian
+        {"ако","if"},                       // Bulgarian/Macedonian
+        {"als","if"},                       // Dutch
+        {"se","if"},                        // Italian/Portuguese
+        {"jeśli","if"},                     // Polish
+        {"если","if"},
+        {"ha","if"},                        // Hungarian
+        {"om","if"},                        // Swedish/Norwegian
+
+        // ── let ───────────────────────────────────────────────────────────────
+        {"пусть","let"},{"let","let"},
+        {"令","let"},{"设","let"},
+        {"設定","let"},{"定義","let"},
+        {"sea","let"},{"seja","let"},
+        {"laisser","let"},{"soit","let"},
+        {"sei","let"},{"lass","let"},
+        {"\xd8\xaf\xd8\xb9","let"},         // Arabic: دع
+        {"niech","let"},                    // Polish
+        {"legyen","let"},                   // Hungarian
+        {"laat","let"},                     // Dutch
+        {"låt","let"},                      // Swedish
+        {"нехай","let"},                    // Ukrainian
+
+        // ── print ─────────────────────────────────────────────────────────────
+        {"печать","print"},{"вывод","print"},{"напечатать","print"},
+        {"打印","print"},{"输出","print"},{"显示","print"},
+        {"印刷","print"},{"出力","print"},
+        {"imprimir","print"},
+        {"imprimer","print"},{"afficher","print"},
+        {"drucken","print"},{"ausgabe","print"},
+        {"\xd8\xa7\xd8\xb7\xd8\xa8\xd8\xb9","print"}, // Arabic: اطبع
+        {"yazdır","print"},                 // Turkish
+        {"drukuj","print"},                 // Polish
+        {"nyomtat","print"},                // Hungarian
+        {"afdrukken","print"},              // Dutch
+        {"skriva","print"},                 // Swedish
+        {"вивести","print"},                // Ukrainian
+
+        // ── input ─────────────────────────────────────────────────────────────
+        {"ввод","input"},{"считать","input"},{"читать","input"},
+        {"输入","input"},{"読込","input"},
+        {"entrada","input"},
+        {"entrée","input"},{"saisie","input"},
+        {"eingabe","input"},{"lesen","input"},
+        {"\xd8\xa3\xd8\xaf\xd8\xae\xd9\x84","input"}, // Arabic: أدخل
+        {"giriş","input"},                  // Turkish
+        {"czytaj","input"},                 // Polish
+        {"invoer","input"},                 // Dutch
+        {"läsa","input"},                   // Swedish
+        {"ввести","input"},                 // Ukrainian
+
+        // ── type ──────────────────────────────────────────────────────────────
+        {"тип","type"},
+        {"类型","type"},{"型","type"},
+        {"tipo","type"},
+        {"typ","type"},
+        {"\xd9\x86\xd9\x88\xd8\xb9","type"}, // Arabic: نوع
+        {"türü","type"},
+        {"rodzaj","type"},
+        {"soort","type"},
+
+        // ── not ───────────────────────────────────────────────────────────────
+        {"не","not"},{"нет","not"},
+        {"非","not"},{"否","not"},
+        {"ない","not"},
+        {"no","not"},
+        {"non","not"},
+        {"nicht","not"},{"nein","not"},
+        {"\xd9\x84\xd9\x8a\xd8\xb3","not"}, // Arabic: ليس
+        {"değil","not"},
+        {"nie","not"},                      // Polish
+        {"nem","not"},                      // Hungarian
+        {"niet","not"},                     // Dutch
+        {"inte","not"},                     // Swedish
+        {"ні","not"},                       // Ukrainian
+
+        // ── map ───────────────────────────────────────────────────────────────
+        {"отобразить","map"},{"применить-к","map"},
+        {"映射","map"},{"映す","map"},
+        {"mapear","map"},{"映射する","map"},
+        {"abbilden","map"},{"zuordnen","map"},
+        {"mappe","map"},
+
+        // ── filter ────────────────────────────────────────────────────────────
+        {"фильтр","filter"},{"отфильтровать","filter"},
+        {"过滤","filter"},{"絞込","filter"},{"絞り込む","filter"},
+        {"filtrar","filter"},
+        {"filtrer","filter"},{"filtern","filter"},
+        {"\xd8\xb1\xd8\xb4\xd8\xad","filter"}, // Arabic: رشح
+        {"filtreren","filter"},
+
+        // ── fold ──────────────────────────────────────────────────────────────
+        {"свёртка","fold"},{"свернуть","fold"},{"сложить","fold"},
+        {"折叠","fold"},{"畳込","fold"},
+        {"plegar","fold"},{"dobrar","fold"},
+        {"réduire","fold"},
+        {"falten","fold"},{"reduzieren","fold"},
+
+        // ── sort ──────────────────────────────────────────────────────────────
+        {"сортировать","sort"},{"сортировка","sort"},
+        {"排序","sort"},{"並替","sort"},{"ソート","sort"},
+        {"ordenar","sort"},
+        {"trier","sort"},
+        {"sortieren","sort"},
+        {"sorteren","sort"},
+
+        // ── range ─────────────────────────────────────────────────────────────
+        {"диапазон","range"},{"промежуток","range"},
+        {"范围","range"},{"範囲","range"},
+        {"rango","range"},{"intervalo","range"},
+        {"plage","range"},{"intervalle","range"},
+        {"bereich","range"},
+        {"\xd9\x86\xd8\xb7\xd8\xa7\xd9\x82","range"}, // Arabic: نطاق
+        {"aralık","range"},
+        {"bereik","range"},
+
+        // ── find ──────────────────────────────────────────────────────────────
+        {"найти","find"},{"найди","find"},
+        {"查找","find"},{"探す","find"},
+        {"encontrar","find"},
+        {"trouver","find"},{"chercher","find"},
+        {"finden","find"},
+        {"zoeken","find"},
+
+        // ── flat ──────────────────────────────────────────────────────────────
+        {"плоско","flat"},{"развернуть","flat"},
+        {"展平","flat"},{"平坦化","flat"},
+        {"aplanar","flat"},
+        {"aplatir","flat"},{"aplanir","flat"},
+        {"glätten","flat"},
+
+        // ── any? ──────────────────────────────────────────────────────────────
+        {"любой?","any?"},{"есть-ли?","any?"},
+        {"任意?","any?"},{"任意","any?"},
+        {"alguno?","any?"},
+        {"certains?","any?"},
+        {"irgendein?","any?"},
+
+        // ── all? ──────────────────────────────────────────────────────────────
+        {"все?","all?"},{"все","all?"},
+        {"所有?","all?"},{"全て?","all?"},{"全て","all?"},
+        {"todos?","all?"},
+        {"tous?","all?"},
+        {"alle?","all?"},
+
+        // ── try ───────────────────────────────────────────────────────────────
+        {"попробовать","try"},{"попытка","try"},
+        {"尝试","try"},{"試行","try"},{"試みる","try"},
+        {"intentar","try"},{"tentar","try"},
+        {"essayer","try"},
+        {"versuchen","try"},
+        {"\xd8\xac\xd8\xb1\xd8\xa8","try"}, // Arabic: جرب
+        {"dene","try"},                     // Turkish
+        {"proberen","try"},                 // Dutch
+        {"försöka","try"},                  // Swedish
+
+        // ── eval ──────────────────────────────────────────────────────────────
+        {"вычислить","eval"},{"оценить","eval"},
+        {"求值","eval"},{"評価","eval"},{"評価する","eval"},
+        {"evaluar","eval"},{"avaliar","eval"},
+        {"évaluer","eval"},
+        {"auswerten","eval"},
+        {"\xd9\x82\xd9\x8a\xd9\x85","eval"}, // Arabic: قيم
+
+        // ── apply ─────────────────────────────────────────────────────────────
+        {"применить","apply"},
+        {"应用","apply"},{"適用","apply"},{"適用する","apply"},
+        {"aplicar","apply"},
+        {"appliquer","apply"},
+        {"anwenden","apply"},
+        {"\xd8\xb7\xd8\xa8\xd9\x82","apply"}, // Arabic: طبق
+
+        // ── io / sequence ─────────────────────────────────────────────────────
+        {"последовательность","io"},{"последов","io"},
+        {"顺序","io"},{"シーケンス","io"},
+        {"secuencia","io"},
+        {"séquence","io"},
+        {"sequenz","io"},
+
+        // ── match ─────────────────────────────────────────────────────────────
+        {"совпадение","match"},{"сопоставить","match"},
+        {"匹配","match"},{"パターンマッチ","match"},
+        {"coincidir","match"},
+        {"correspondre","match"},
+        {"abgleichen","match"},
+
+        // ── dict ──────────────────────────────────────────────────────────────
+        {"словарь","dict"},
+        {"字典","dict"},{"辞書","dict"},
+        {"diccionario","dict"},
+        {"dictionnaire","dict"},
+        {"wörterbuch","dict"},
+
+        // ── dict-set ──────────────────────────────────────────────────────────
+        {"словарь-установить","dict-set"},
+        {"设置","dict-set"},{"セット","dict-set"},
+
+        // ── dict-get ──────────────────────────────────────────────────────────
+        {"словарь-получить","dict-get"},
+        {"获取","dict-get"},{"ゲット","dict-get"},
+
+        // ── dict-has? ─────────────────────────────────────────────────────────
+        {"словарь-есть?","dict-has?"},
+        {"有?","dict-has?"},{"持つ?","dict-has?"},
+
+        // ── dict-keys ─────────────────────────────────────────────────────────
+        {"ключи","dict-keys"},
+        {"键","dict-keys"},{"キー","dict-keys"},
+        {"claves","dict-keys"},
+
+        // ── dict-vals ─────────────────────────────────────────────────────────
+        {"значения","dict-vals"},
+        {"值","dict-vals"},{"値","dict-vals"},
+        {"valores","dict-vals"},
+
+        // ── dict-len ──────────────────────────────────────────────────────────
+        {"словарь-длина","dict-len"},
+        {"字典长度","dict-len"},
+
+        // ── dict-del ──────────────────────────────────────────────────────────
+        {"словарь-удалить","dict-del"},
+        {"删除","dict-del"},{"削除","dict-del"},
+
+        // ── dict-merge ────────────────────────────────────────────────────────
+        {"объединить","dict-merge"},
+        {"合并","dict-merge"},{"マージ","dict-merge"},
+
+        // ── str-cat ───────────────────────────────────────────────────────────
+        {"строка-конкат","str-cat"},
+        {"字符串连接","str-cat"},{"文字列連結","str-cat"},
+        {"concatenar","str-cat"},
+
+        // ── str-len ───────────────────────────────────────────────────────────
+        {"строка-длина","str-len"},
+        {"字符串长度","str-len"},{"文字列長","str-len"},
+        {"longitud","str-len"},{"longueur","str-len"},{"länge","str-len"},
+
+        // ── str-split ─────────────────────────────────────────────────────────
+        {"строка-разбить","str-split"},
+        {"分割","str-split"},{"分ける","str-split"},
+        {"dividir","str-split"},{"fractionner","str-split"},{"teilen","str-split"},
+
+        // ── str-trim ──────────────────────────────────────────────────────────
+        {"строка-обрезать","str-trim"},
+        {"修剪","str-trim"},{"トリム","str-trim"},
+        {"recortar","str-trim"},
+
+        // ── str-find ──────────────────────────────────────────────────────────
+        {"строка-найти","str-find"},
+        {"字符串查找","str-find"},{"文字列検索","str-find"},
+
+        // ── str-upper / str-lower ─────────────────────────────────────────────
+        {"верхний-регистр","str-upper"},{"строка-верх","str-upper"},
+        {"大写","str-upper"},{"大文字","str-upper"},{"mayúsculas","str-upper"},
+        {"нижний-регистр","str-lower"},{"строка-низ","str-lower"},
+        {"小写","str-lower"},{"小文字","str-lower"},{"minúsculas","str-lower"},
+
+        // ── str->num ──────────────────────────────────────────────────────────
+        {"строка->число","str->num"},{"в-число","str->num"},
+        {"字符串转数字","str->num"},{"文字列から数値","str->num"},
+
+        // ── num->str ──────────────────────────────────────────────────────────
+        {"число->строка","num->str"},{"в-строку","num->str"},
+        {"数字转字符串","num->str"},{"数値から文字列","num->str"},
+    };
+    return T;
+}
+
+// Normalize a keyword to canonical XN form.
+// Returns the canonical keyword if found, otherwise returns s unchanged.
+static std::string normalize(const std::string& s) {
+    auto& T = langAliases();
+    auto it = T.find(s);
+    return (it != T.end()) ? it->second : s;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // COMPILER
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -380,10 +689,12 @@ struct Compiler {
         case K::FLT:    emit(Op::PUSH_CONST, addConst(mkDbl(n->fval))); return;
         case K::STR:    emit(Op::PUSH_CONST, addConst(mkStr(n->sval))); return;
         case K::ATOM: {
-            auto& s=n->sval;
-            if(s=="\xe2\x8a\xa5") { emit(Op::PUSH_NIL);  return; } // ⊥
-            if(s=="\xe2\x8a\xa4") { emit(Op::PUSH_TRUE); return; } // ⊤
-            emit(Op::LOAD, co->nameIdx(s));
+            std::string s = normalize(n->sval);
+            if(s=="\xe2\x8a\xa5"||s=="ложь"||s=="nil"||s=="нет"||s=="нуль"
+               ||s=="\xe5\x81\x87"/*假*/||s=="\xe3\x81\x84\xe3\x81\x84\xe3\x81\x88"/*いいえ*/) { emit(Op::PUSH_NIL);  return; }
+            if(s=="\xe2\x8a\xa4"||s=="истина"||s=="true"||s=="да"
+               ||s=="\xe7\x9c\x9f"/*真*/||s=="\xe3\x81\xaf\xe3\x81\x84"/*はい*/) { emit(Op::PUSH_TRUE); return; }
+            emit(Op::LOAD, co->nameIdx(n->sval)); // use original name for variable lookup
             return;
         }
         case K::LIST:
@@ -403,7 +714,7 @@ struct Compiler {
     void compSexpr(AST n) {
         auto& ch=n->ch;
         if(ch.empty()) { emit(Op::PUSH_NIL); return; }
-        std::string h=atomOf(ch[0]);
+        std::string h=normalize(atomOf(ch[0]));
 
         // ── lambda ────────────────────────────────────────────────────────────
         if(h=="\xce\xbb"||h=="\\") { compLambda(ch[1], ch[2]); return; }
