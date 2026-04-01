@@ -209,10 +209,93 @@ expr :=
 
 ---
 
+## New Features (v3)
+
+**Strings:**
+```xn
+(str-cat "a" "b" "c")       -- "abc"
+(+ "hello" " " "world")     -- concat via +
+(str-len s)                  -- length in bytes
+(str-get s i)                -- char at index i → 1-char string or ⊥
+(str-sub s start end)        -- substring [start, end)
+(str-split s sep)            -- split → list of strings
+(str-trim s)                 -- strip whitespace
+(str-find s sub)             -- index of sub or ⊥
+(str->num s)                 -- parse to int/float or ⊥
+(num->str n)                 -- number → string
+(str-upper s) (str-lower s)
+(str-starts? s prefix) (str-ends? s suffix)
+(str-replace s from to)
+```
+
+**Dicts** (immutable, copy-on-write):
+```xn
+(dict)                        -- empty dict
+(dict-set d "key" val)        -- returns new dict
+(dict-get d "key")            -- val or ⊥
+(dict-has? d "key")           -- ⊤/⊥
+(dict-del d "key")            -- returns new dict
+(dict-keys d)                 -- list of strings
+(dict-vals d)                 -- list of values
+(dict-len d)                  -- int
+(dict-merge d1 d2)            -- d2 overrides d1
+```
+
+**More list ops:**
+```xn
+(filter xs f)                 -- keep where f returns ⊤
+(any? xs f)                   -- ⊤ if any match
+(all? xs f)                   -- ⊤ if all match
+(find xs f)                   -- first match or ⊥
+(flat xs)                     -- flatten one level
+(range n)                     -- [0..n-1]
+(range start end)             -- [start..end-1]
+(range start end step)
+```
+
+**Variadic lambdas:**
+```xn
+(λ (x . rest) body)           -- rest collects extra args as list
+(= sum-all (λ (. args) (Σ args)))
+(sum-all 1 2 3 4 5)           -- 15
+```
+
+**TCO (Tail Call Optimization):**
+Any call in tail position is automatically optimized — no stack overflow for deep recursion:
+```xn
+(= loop (λ (n) (if (= n 0) "done" (loop (- n 1)))))
+(loop 1000000)  -- works fine
+```
+
+**try/catch:**
+```xn
+(try expr)                     -- returns result or ⊥ on error
+(try expr (\ (e) fallback))    -- e = error message string
+```
+
+**Other:**
+```xn
+(input)                        -- read line from stdin → string
+(type x)                       -- "nil"/"bool"/"int"/"float"/"str"/"list"/"node"/"fn"/"dict"
+(apply f list)                 -- call f with list as args
+(not x)                        -- boolean negation
+(eval str)                     -- parse and run XN source string, returns last value
+```
+
+**String escape sequences in literals:**
+```xn
+"hello\nworld"   -- newline
+"col1\tcol2"     -- tab
+```
+
+---
+
 ## Running
 
 ```sh
 xnvm program.xn
+xnvm --build program.xn            # → program.exe (standalone)
+xnvm --build program.xn out.exe    # → out.exe
 ```
 
 Compile xnvm from source (requires C++20):
