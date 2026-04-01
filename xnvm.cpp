@@ -65,17 +65,32 @@ struct Instr { Op op; int64_t arg = 0; };
 // ══════════════════════════════════════════════════════════════════════════════
 
 struct Value;
-struct Env;
+struct CapturedEnv;
 struct Closure;
 struct CodeObj;
 
-using Val  = std::shared_ptr<Value>;
-using EnvP = std::shared_ptr<Env>;
-using Code = std::shared_ptr<CodeObj>;
-using Dict = std::shared_ptr<std::unordered_map<std::string, Val>>;
+using Val   = std::shared_ptr<Value>;
+using CapP  = std::shared_ptr<CapturedEnv>;
+using Code  = std::shared_ptr<CodeObj>;
+using Dict  = std::shared_ptr<std::unordered_map<std::string, Val>>;
 
 struct XNode   { Val left, right, val; };
-struct Closure { Code code; EnvP env; };
+
+// CapturedEnv: heap-allocated snapshot of variables for closures.
+// Created ONLY at MAKE_CLOSURE — not at every function call.
+struct CapturedEnv {
+    std::unordered_map<std::string, Val> bindings;
+    CapP                                 parent;   // outer closure scope
+
+    Val get(const std::string& n) const {
+        auto it = bindings.find(n);
+        if (it != bindings.end()) return it->second;
+        if (parent) return parent->get(n);
+        return nullptr; // not found
+    }
+};
+
+struct Closure { Code code; CapP captured; };
 
 struct CodeObj {
     std::string              name;
@@ -192,8 +207,8 @@ inline Val mkList(std::vector<Val> v)   { return std::make_shared<Value>(Value{s
 inline Val mkNode(Val l, Val r, Val v) {
     return std::make_shared<Value>(Value{std::make_shared<XNode>(XNode{l,r,v})});
 }
-inline Val mkClosure(Code c, EnvP e) {
-    return std::make_shared<Value>(Value{std::make_shared<Closure>(Closure{c,e})});
+inline Val mkClosure(Code c, CapP cap) {
+    return std::make_shared<Value>(Value{std::make_shared<Closure>(Closure{c, std::move(cap)})});
 }
 inline Val mkDict(std::unordered_map<std::string,Val> m = {}) {
     return std::make_shared<Value>(Value{
@@ -202,51 +217,19 @@ inline Val mkDict(std::unordered_map<std::string,Val> m = {}) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ENVIRONMENT
+// GLOBALS  (module-level name→value map, replaces the old "Env" for globals)
 // ══════════════════════════════════════════════════════════════════════════════
 
-struct Env {
-    // Map mode: used for module globals (dynamic, string-keyed).
-    // Slot mode: used for function frames (indexed by CodeObj::names index).
-    //   slots[i] == nullptr means "not yet populated — look up in parent".
-    //   This enables O(1) local access and lazy capture of closure variables.
-
-    std::unordered_map<std::string, Val> vars;  // map mode
-    std::vector<Val>                     slots; // slot mode (nullptr = uncached)
-    EnvP                                 parent;
-    bool                                 slot_mode = false;
-
-    explicit Env(EnvP p = nullptr) : parent(p) {}
-    // Slot-mode constructor: n = co->names.size()
-    Env(int n, EnvP p) : slots(n), parent(p), slot_mode(true) {}
-
+struct Globals {
+    std::unordered_map<std::string, Val> vars;
     Val get(const std::string& n) const {
-        // vars holds: map-mode entries, OR cached captures for slot-mode frames
         auto it = vars.find(n);
         if (it != vars.end()) return it->second;
-        if (parent) return parent->get(n);
-        throw std::runtime_error("Undefined: " + n);
+        return nullptr;
     }
     void set(const std::string& n, Val v) { vars[n] = v; }
-
-    // Fast slot access (function frames only).
-    // Falls back to parent for closure captures, caches in both slots[] and vars{}
-    // so that child closures can find the value via get(name).
-    Val get_slot(int idx, const std::string& n) {
-        Val& s = slots[idx];
-        if (s) return s;
-        if (parent) {
-            s = parent->get(n);
-            vars[n] = s;  // cache by name for child closure captures via get()
-            return s;
-        }
-        throw std::runtime_error("Undefined: " + n);
-    }
-    void set_slot(int idx, const std::string& n, Val v) {
-        slots[idx] = v;
-        vars[n] = v;  // mirror by name for child closure lookup via get()
-    }
 };
+using GlobalsP = std::shared_ptr<Globals>;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // LEXER
@@ -668,17 +651,54 @@ struct Compiler {
 
 struct VM {
     Compiler& C;
-    EnvP      globals;
+    GlobalsP  globals;
 
-    explicit VM(Compiler& c) : C(c), globals(std::make_shared<Env>()) {}
+    explicit VM(Compiler& c) : C(c), globals(std::make_shared<Globals>()) {}
 
-    Val callClosure(const std::shared_ptr<Closure>& clo, std::vector<Val> args) {
-        auto frame = makeFrame(clo, args);
-        return exec(clo->code, frame);
-    }
+    // ── Frame ─────────────────────────────────────────────────────────────────
+    // Inline small buffer for locals avoids heap alloc for functions ≤ INLINE_N vars.
+    // Larger functions fall back to locals_ext.
+    // captured: the closure's captured environment (null for top-level functions).
+    struct Frame {
+        static constexpr int INLINE_N = 8;
 
-    // Build a slot-based function frame.
-    static EnvP makeFrame(const std::shared_ptr<Closure>& clo, std::vector<Val>& args) {
+        Code             co;
+        CapP             captured;
+        int              ip = 0;
+        std::vector<Val> stk;
+
+        // Local variable storage
+        Val              locals_buf[INLINE_N] = {};
+        std::vector<Val> locals_ext;
+        int              locals_n = 0;
+
+        Frame(Code c, CapP cap, int nlocals)
+            : co(std::move(c)), captured(std::move(cap)), locals_n(nlocals) {
+            stk.reserve(16);
+            if (nlocals > INLINE_N) locals_ext.resize(nlocals);
+        }
+        // Disable copy (large objects)
+        Frame(const Frame&) = delete;
+        Frame& operator=(const Frame&) = delete;
+        Frame(Frame&&) = default;
+        Frame& operator=(Frame&&) = default;
+
+        Val& local(int i) {
+            return (locals_n <= INLINE_N) ? locals_buf[i] : locals_ext[i];
+        }
+        void reset_locals(int nlocals) {
+            locals_n = nlocals;
+            if (nlocals <= INLINE_N) {
+                for (int i = 0; i < nlocals; i++) locals_buf[i] = nullptr;
+            } else {
+                locals_ext.assign(nlocals, nullptr);
+            }
+        }
+    };
+
+    // ── Validate + bind args into a frame ─────────────────────────────────────
+    static void bindArgs(Frame& F, const std::shared_ptr<Closure>& clo,
+                         std::vector<Val>& args) {
         auto& co = clo->code;
         if (!co->variadic && (int)args.size() != co->arity)
             throw std::runtime_error(co->name+": expected "+std::to_string(co->arity)
@@ -686,63 +706,93 @@ struct VM {
         if (co->variadic && (int)args.size() < co->arity)
             throw std::runtime_error(co->name+": expected at least "+std::to_string(co->arity)
                 +" args, got "+std::to_string(args.size()));
-        auto frame = std::make_shared<Env>((int)co->names.size(), clo->env);
-        for (int i = 0; i < co->arity; i++) {
-            frame->slots[i] = args[i];
-            frame->vars[co->names[i]] = args[i];
-        }
+        for (int i = 0; i < co->arity; i++) F.local(i) = args[i];
         if (co->variadic && co->arity < (int)co->names.size()) {
             std::vector<Val> rest(args.begin()+co->arity, args.end());
-            frame->slots[co->arity] = mkList(std::move(rest));
-            frame->vars[co->names[co->arity]] = frame->slots[co->arity];
+            F.local(co->arity) = mkList(std::move(rest));
         }
-        return frame;
     }
 
-    Val exec(Code startCo, EnvP startEnv) {
-        // Iterative interpreter: explicit call stack avoids C++ stack overflow
-        // and eliminates recursive callClosure overhead.
-        struct Frame {
-            Code             co;
-            EnvP             env;
-            int              ip = 0;
-            std::vector<Val> stk;
-            Frame(Code c, EnvP e) : co(std::move(c)), env(std::move(e)) { stk.reserve(32); }
-        };
+    // ── callClosure: entry point for TRY / APPLY / LIST_FOLD / LIST_MAP etc. ──
+    Val callClosure(const std::shared_ptr<Closure>& clo, std::vector<Val> args) {
+        return execClo(clo, args);
+    }
 
-        std::vector<Frame> cs; // call stack
-        cs.reserve(64);
-        cs.emplace_back(startCo, startEnv);
+    // ── Full iterative exec ───────────────────────────────────────────────────
+    Val execClo(const std::shared_ptr<Closure>& startClo, std::vector<Val>& startArgs) {
+        std::vector<Frame> cs;
+        cs.reserve(32);
+        cs.emplace_back(startClo->code,
+                        startClo->captured,
+                        (int)startClo->code->names.size());
+        bindArgs(cs.back(), startClo, startArgs);
+        return execLoop(cs);
+    }
+
+    // Module-level exec (no closure, globals only)
+    Val exec(Code startCo, GlobalsP /*g*/) {
+        std::vector<Frame> cs;
+        cs.reserve(32);
+        cs.emplace_back(startCo, nullptr, (int)startCo->names.size());
+        return execLoop(cs);
+    }
+
+    Val execLoop(std::vector<Frame>& cs) {
 
     dispatch:
         while (!cs.empty()) {
-            Frame& F  = cs.back();
-            Code   co = F.co;   // local copies for speed (avoid deref each op)
-            EnvP   env= F.env;
-            auto&  stk= F.stk;
-            int&   ip = F.ip;
+        Frame& F   = cs.back();
+        Code&  co  = F.co;
+        CapP&  cap = F.captured;
+        int&   ip  = F.ip;
+        auto&  stk = F.stk;
 
-            auto push = [&](Val v) { stk.push_back(std::move(v)); };
-            auto pop  = [&]() -> Val { Val v = stk.back(); stk.pop_back(); return v; };
+        auto push = [&](Val v) { stk.push_back(std::move(v)); };
+        auto pop  = [&]() -> Val { Val v = stk.back(); stk.pop_back(); return v; };
 
-            while (ip < (int)co->code.size()) {
-                const auto& ins = co->code[ip++];
-                switch (ins.op) {
+        // LOAD helper: local first → captured chain → globals
+        auto load = [&](int idx) -> Val {
+            Val& loc = F.local(idx);
+            if (loc) return loc;
+            if (cap) {
+                Val v = cap->get(co->names[idx]);
+                if (v) return v;
+            }
+            Val v = globals->get(co->names[idx]);
+            if (v) return v;
+            throw std::runtime_error("Undefined: " + co->names[idx]);
+        };
+
+        while (ip < (int)co->code.size()) {
+            const auto& ins = co->code[ip++];
+            switch (ins.op) {
 
             case Op::PUSH_CONST: push(co->consts[ins.arg]); break;
             case Op::PUSH_NIL:   push(NIL_V);  break;
             case Op::PUSH_TRUE:  push(TRUE_V); break;
-            case Op::LOAD:
-                if(env->slot_mode) push(env->get_slot(ins.arg, co->names[ins.arg]));
-                else               push(env->get(co->names[ins.arg]));
+            case Op::LOAD:  push(load(ins.arg)); break;
+            case Op::STORE: {
+                Val v = pop();
+                if (cap) {
+                    // function frame — store in local slot
+                    F.local(ins.arg) = v;
+                } else {
+                    // module frame — store in globals (so EVAL / cross-VM access works)
+                    globals->set(co->names[ins.arg], v);
+                }
                 break;
-            case Op::STORE:
-                if(env->slot_mode) env->set_slot(ins.arg, co->names[ins.arg], pop());
-                else               env->set(co->names[ins.arg], pop());
-                break;
+            }
 
-            case Op::MAKE_CLOSURE:
-                push(mkClosure(C.pool[ins.arg], env)); break;
+            case Op::MAKE_CLOSURE: {
+                // Snapshot current locals + captured chain into a new CapturedEnv
+                auto newcap = std::make_shared<CapturedEnv>();
+                newcap->parent = cap;
+                for (int i = 0; i < F.locals_n; i++) {
+                    if (F.local(i)) newcap->bindings[co->names[i]] = F.local(i);
+                }
+                push(mkClosure(C.pool[ins.arg], std::move(newcap)));
+                break;
+            }
 
             case Op::CALL: {
                 int n = (int)ins.arg;
@@ -753,14 +803,18 @@ struct VM {
                 auto clo = fn->asClosure();
                 bool tail = (ip < (int)co->code.size() && co->code[ip].op == Op::RETURN);
                 if (tail) {
-                    // TCO: reuse current call-stack slot, update frame in place
-                    auto frame = makeFrame(clo, args);
-                    F.co  = clo->code; F.env = frame; F.ip = 0; F.stk.clear();
+                    // TCO: reuse current frame slot
+                    F.co       = clo->code;
+                    F.captured = clo->captured;
+                    F.ip       = 0;
+                    F.stk.clear();
+                    F.reset_locals((int)clo->code->names.size());
+                    bindArgs(F, clo, args);
                     goto dispatch;
                 }
-                // Non-tail: push new frame; when it RETURNs result lands here
-                auto frame = makeFrame(clo, args);
-                cs.emplace_back(clo->code, frame);
+                // Non-tail: push new frame
+                cs.emplace_back(clo->code, clo->captured, (int)clo->code->names.size());
+                bindArgs(cs.back(), clo, args);
                 goto dispatch;
             }
 
