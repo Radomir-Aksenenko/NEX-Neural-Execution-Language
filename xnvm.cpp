@@ -169,7 +169,23 @@ struct Value {
 static Val NIL_V  = std::make_shared<Value>(Value{std::monostate{}});
 static Val TRUE_V = std::make_shared<Value>(Value{true});
 
-inline Val mkInt (int64_t v)            { return std::make_shared<Value>(Value{v}); }
+// ── Small integer cache [-256 .. 1023] ────────────────────────────────────────
+static constexpr int INT_CACHE_MIN = -256;
+static constexpr int INT_CACHE_MAX = 1023;
+static constexpr int INT_CACHE_SIZE = INT_CACHE_MAX - INT_CACHE_MIN + 1;
+static Val INT_CACHE[INT_CACHE_SIZE];
+static struct IntCacheInit {
+    IntCacheInit() {
+        for (int i = 0; i < INT_CACHE_SIZE; i++)
+            INT_CACHE[i] = std::make_shared<Value>(Value{(int64_t)(i + INT_CACHE_MIN)});
+    }
+} _int_cache_init;
+
+inline Val mkInt(int64_t v) {
+    if (v >= INT_CACHE_MIN && v <= INT_CACHE_MAX)
+        return INT_CACHE[v - INT_CACHE_MIN];
+    return std::make_shared<Value>(Value{v});
+}
 inline Val mkDbl (double  v)            { return std::make_shared<Value>(Value{v}); }
 inline Val mkStr (std::string v)        { return std::make_shared<Value>(Value{std::move(v)}); }
 inline Val mkList(std::vector<Val> v)   { return std::make_shared<Value>(Value{std::move(v)}); }
@@ -190,17 +206,46 @@ inline Val mkDict(std::unordered_map<std::string,Val> m = {}) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 struct Env {
-    std::unordered_map<std::string, Val> vars;
-    EnvP parent;
+    // Map mode: used for module globals (dynamic, string-keyed).
+    // Slot mode: used for function frames (indexed by CodeObj::names index).
+    //   slots[i] == nullptr means "not yet populated — look up in parent".
+    //   This enables O(1) local access and lazy capture of closure variables.
+
+    std::unordered_map<std::string, Val> vars;  // map mode
+    std::vector<Val>                     slots; // slot mode (nullptr = uncached)
+    EnvP                                 parent;
+    bool                                 slot_mode = false;
+
     explicit Env(EnvP p = nullptr) : parent(p) {}
+    // Slot-mode constructor: n = co->names.size()
+    Env(int n, EnvP p) : slots(n), parent(p), slot_mode(true) {}
 
     Val get(const std::string& n) const {
+        // vars holds: map-mode entries, OR cached captures for slot-mode frames
         auto it = vars.find(n);
         if (it != vars.end()) return it->second;
         if (parent) return parent->get(n);
         throw std::runtime_error("Undefined: " + n);
     }
     void set(const std::string& n, Val v) { vars[n] = v; }
+
+    // Fast slot access (function frames only).
+    // Falls back to parent for closure captures, caches in both slots[] and vars{}
+    // so that child closures can find the value via get(name).
+    Val get_slot(int idx, const std::string& n) {
+        Val& s = slots[idx];
+        if (s) return s;
+        if (parent) {
+            s = parent->get(n);
+            vars[n] = s;  // cache by name for child closure captures via get()
+            return s;
+        }
+        throw std::runtime_error("Undefined: " + n);
+    }
+    void set_slot(int idx, const std::string& n, Val v) {
+        slots[idx] = v;
+        vars[n] = v;  // mirror by name for child closure lookup via get()
+    }
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -628,74 +673,104 @@ struct VM {
     explicit VM(Compiler& c) : C(c), globals(std::make_shared<Env>()) {}
 
     Val callClosure(const std::shared_ptr<Closure>& clo, std::vector<Val> args) {
-        auto& co=clo->code;
-        if(!co->variadic && (int)args.size()!=co->arity)
+        auto frame = makeFrame(clo, args);
+        return exec(clo->code, frame);
+    }
+
+    // Build a slot-based function frame.
+    static EnvP makeFrame(const std::shared_ptr<Closure>& clo, std::vector<Val>& args) {
+        auto& co = clo->code;
+        if (!co->variadic && (int)args.size() != co->arity)
             throw std::runtime_error(co->name+": expected "+std::to_string(co->arity)
                 +" args, got "+std::to_string(args.size()));
-        if(co->variadic && (int)args.size()<co->arity)
+        if (co->variadic && (int)args.size() < co->arity)
             throw std::runtime_error(co->name+": expected at least "+std::to_string(co->arity)
                 +" args, got "+std::to_string(args.size()));
-        auto frame=std::make_shared<Env>(clo->env);
-        for(int i=0;i<co->arity;i++) frame->set(co->names[i], args[i]);
-        if(co->variadic && co->arity < (int)co->names.size()) {
-            std::vector<Val> rest(args.begin()+co->arity, args.end());
-            frame->set(co->names[co->arity], mkList(std::move(rest)));
+        auto frame = std::make_shared<Env>((int)co->names.size(), clo->env);
+        for (int i = 0; i < co->arity; i++) {
+            frame->slots[i] = args[i];
+            frame->vars[co->names[i]] = args[i];
         }
-        return exec(co, frame);
+        if (co->variadic && co->arity < (int)co->names.size()) {
+            std::vector<Val> rest(args.begin()+co->arity, args.end());
+            frame->slots[co->arity] = mkList(std::move(rest));
+            frame->vars[co->names[co->arity]] = frame->slots[co->arity];
+        }
+        return frame;
     }
 
     Val exec(Code startCo, EnvP startEnv) {
-        Code co  = startCo;
-        EnvP env = startEnv;
+        // Iterative interpreter: explicit call stack avoids C++ stack overflow
+        // and eliminates recursive callClosure overhead.
+        struct Frame {
+            Code             co;
+            EnvP             env;
+            int              ip = 0;
+            std::vector<Val> stk;
+            Frame(Code c, EnvP e) : co(std::move(c)), env(std::move(e)) { stk.reserve(32); }
+        };
 
-    tco_restart:
-        std::vector<Val> stack;
-        stack.reserve(64);
-        int ip=0;
+        std::vector<Frame> cs; // call stack
+        cs.reserve(64);
+        cs.emplace_back(startCo, startEnv);
 
-        auto push = [&](Val v)      { stack.push_back(std::move(v)); };
-        auto pop  = [&]() -> Val    { Val v=stack.back(); stack.pop_back(); return v; };
+    dispatch:
+        while (!cs.empty()) {
+            Frame& F  = cs.back();
+            Code   co = F.co;   // local copies for speed (avoid deref each op)
+            EnvP   env= F.env;
+            auto&  stk= F.stk;
+            int&   ip = F.ip;
 
-        while(ip<(int)co->code.size()) {
-            auto& ins=co->code[ip++];
-            switch(ins.op) {
+            auto push = [&](Val v) { stk.push_back(std::move(v)); };
+            auto pop  = [&]() -> Val { Val v = stk.back(); stk.pop_back(); return v; };
+
+            while (ip < (int)co->code.size()) {
+                const auto& ins = co->code[ip++];
+                switch (ins.op) {
 
             case Op::PUSH_CONST: push(co->consts[ins.arg]); break;
             case Op::PUSH_NIL:   push(NIL_V);  break;
             case Op::PUSH_TRUE:  push(TRUE_V); break;
-            case Op::LOAD:       push(env->get(co->names[ins.arg])); break;
-            case Op::STORE:      env->set(co->names[ins.arg], pop()); break;
+            case Op::LOAD:
+                if(env->slot_mode) push(env->get_slot(ins.arg, co->names[ins.arg]));
+                else               push(env->get(co->names[ins.arg]));
+                break;
+            case Op::STORE:
+                if(env->slot_mode) env->set_slot(ins.arg, co->names[ins.arg], pop());
+                else               env->set(co->names[ins.arg], pop());
+                break;
 
             case Op::MAKE_CLOSURE:
                 push(mkClosure(C.pool[ins.arg], env)); break;
 
             case Op::CALL: {
-                int n=(int)ins.arg;
+                int n = (int)ins.arg;
                 std::vector<Val> args(n);
-                for(int i=n-1;i>=0;i--) args[i]=pop();
-                Val fn=pop();
-                if(!fn->isClosure()) throw std::runtime_error("Not callable: "+fn->repr());
-                auto clo=fn->asClosure();
-                // TCO: if immediately followed by RETURN, reuse frame
-                bool tail=(ip<(int)co->code.size() && co->code[ip].op==Op::RETURN);
-                if(tail) {
-                    if(!clo->code->variadic && (int)args.size()!=clo->code->arity)
-                        throw std::runtime_error(clo->code->name+": arity mismatch in TCO");
-                    auto frame=std::make_shared<Env>(clo->env);
-                    for(int i=0;i<clo->code->arity;i++) frame->set(clo->code->names[i], args[i]);
-                    if(clo->code->variadic && clo->code->arity<(int)clo->code->names.size()) {
-                        std::vector<Val> rest(args.begin()+clo->code->arity, args.end());
-                        frame->set(clo->code->names[clo->code->arity], mkList(std::move(rest)));
-                    }
-                    co=clo->code; env=frame;
-                    goto tco_restart;
+                for (int i = n-1; i >= 0; i--) args[i] = pop();
+                Val fn = pop();
+                if (!fn->isClosure()) throw std::runtime_error("Not callable: "+fn->repr());
+                auto clo = fn->asClosure();
+                bool tail = (ip < (int)co->code.size() && co->code[ip].op == Op::RETURN);
+                if (tail) {
+                    // TCO: reuse current call-stack slot, update frame in place
+                    auto frame = makeFrame(clo, args);
+                    F.co  = clo->code; F.env = frame; F.ip = 0; F.stk.clear();
+                    goto dispatch;
                 }
-                push(callClosure(clo, std::move(args)));
-                break;
+                // Non-tail: push new frame; when it RETURNs result lands here
+                auto frame = makeFrame(clo, args);
+                cs.emplace_back(clo->code, frame);
+                goto dispatch;
             }
 
-            case Op::RETURN:
-                return stack.empty() ? NIL_V : pop();
+            case Op::RETURN: {
+                Val result = stk.empty() ? NIL_V : pop();
+                cs.pop_back();
+                if (cs.empty()) return result;
+                cs.back().stk.push_back(std::move(result));
+                goto dispatch;
+            }
 
             case Op::JUMP:          ip=(int)ins.arg; break;
             case Op::JUMP_IF_FALSE: { Val c=pop(); if(!c->truthy()) ip=(int)ins.arg; break; }
@@ -1021,9 +1096,16 @@ struct VM {
 
             #undef BCAST_OP
             default: throw std::runtime_error("Unknown opcode "+std::to_string((int)ins.op));
-            }
-        }
-        return stack.empty() ? NIL_V : stack.back();
+            } // switch
+            } // inner while (instruction loop)
+
+            // Reached end of code without explicit RETURN — treat as return NIL
+            Val result = stk.empty() ? NIL_V : stk.back();
+            cs.pop_back();
+            if (cs.empty()) return result;
+            cs.back().stk.push_back(std::move(result));
+        } // outer while (call stack loop)
+        return NIL_V;
     }
 
     void run() { exec(C.co, globals); }
